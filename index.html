@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>店家查詢系統</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    margin: 0; padding: 0;
+    background: #f4f6f8; color: #222;
+  }
+  header {
+    background: linear-gradient(135deg, #0066cc, #004c99);
+    color: white; padding: 16px 20px;
+    position: sticky; top: 0; z-index: 100;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  }
+  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  .container { max-width: 900px; margin: 0 auto; padding: 16px; }
+  .upload-box {
+    background: white; border-radius: 12px; padding: 20px;
+    text-align: center; border: 2px dashed #bbb;
+    margin-bottom: 16px; transition: all 0.2s;
+  }
+  .upload-box.has-file { border-style: solid; border-color: #0066cc; text-align: left; }
+  .upload-box label {
+    display: inline-block; background: #0066cc; color: white;
+    padding: 10px 20px; border-radius: 8px; cursor: pointer;
+    font-size: 15px; font-weight: 500;
+  }
+  .upload-box input[type=file] { display: none; }
+  .upload-info { margin-top: 10px; font-size: 14px; color: #555; }
+  .search-wrap {
+    background: white; border-radius: 12px; padding: 16px;
+    margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    position: sticky; top: 60px; z-index: 50;
+  }
+  #searchInput {
+    width: 100%; padding: 14px 16px; font-size: 16px;
+    border: 2px solid #e0e0e0; border-radius: 10px;
+    outline: none; transition: border-color 0.2s;
+  }
+  #searchInput:focus { border-color: #0066cc; }
+  .stats { font-size: 13px; color: #666; margin-top: 8px; }
+  .results { display: flex; flex-direction: column; gap: 10px; }
+  .card {
+    background: white; border-radius: 10px; padding: 14px 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    border-left: 4px solid #0066cc;
+  }
+  .card .name {
+    font-size: 16px; font-weight: 600; color: #111;
+    margin-bottom: 6px; word-break: break-word;
+  }
+  .card .row {
+    font-size: 14px; color: #444; margin: 3px 0;
+    display: flex; gap: 6px; align-items: flex-start;
+  }
+  .card .label {
+    color: #888; flex-shrink: 0; min-width: 42px;
+  }
+  .card .value { word-break: break-word; flex: 1; }
+  .card a { color: #0066cc; text-decoration: none; }
+  .card a:active { text-decoration: underline; }
+  .hl { background: #fff3a0; padding: 0 2px; border-radius: 2px; font-weight: 600; }
+  .empty {
+    text-align: center; padding: 40px 20px; color: #888; font-size: 14px;
+  }
+  .error {
+    background: #fee; color: #c33; padding: 12px; border-radius: 8px;
+    margin-top: 10px; font-size: 14px;
+  }
+  @media (max-width: 480px) {
+    .container { padding: 12px; }
+    header h1 { font-size: 16px; }
+  }
+</style>
+</head>
+<body>
+<header><h1>🔍 店家查詢系統</h1></header>
+<div class="container">
+  <div class="upload-box" id="uploadBox">
+    <label for="fileInput">📂 選擇客戶名單 Excel 檔</label>
+    <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
+    <div class="upload-info" id="uploadInfo">支援 .xlsx / .xls / .csv 格式</div>
+    <div id="errorMsg"></div>
+  </div>
+
+  <div id="searchSection" style="display:none">
+    <div class="search-wrap">
+      <input type="text" id="searchInput" placeholder="輸入店名、地址、電話等關鍵字…" autocomplete="off">
+      <div class="stats" id="stats"></div>
+    </div>
+    <div class="results" id="results"></div>
+  </div>
+</div>
+
+<script>
+let allData = [];
+let headers = [];
+
+const fileInput = document.getElementById('fileInput');
+const uploadBox = document.getElementById('uploadBox');
+const uploadInfo = document.getElementById('uploadInfo');
+const errorMsg = document.getElementById('errorMsg');
+const searchSection = document.getElementById('searchSection');
+const searchInput = document.getElementById('searchInput');
+const results = document.getElementById('results');
+const stats = document.getElementById('stats');
+
+// 儲存上次使用的資料
+try {
+  const saved = localStorage.getItem('shopSearchData');
+  if (saved) {
+    const obj = JSON.parse(saved);
+    allData = obj.data || [];
+    headers = obj.headers || [];
+    if (allData.length > 0) {
+      uploadBox.classList.add('has-file');
+      uploadInfo.textContent = `✓ 已載入上次資料：${obj.filename || '檔案'}（${allData.length} 筆）`;
+      searchSection.style.display = 'block';
+      render('');
+    }
+  }
+} catch(e) {}
+
+fileInput.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  errorMsg.innerHTML = '';
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      const data = new Uint8Array(ev.target.result);
+      const wb = XLSX.read(data, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const json = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+      if (json.length < 2) throw new Error('檔案沒有資料');
+      headers = json[0].map(h => String(h || '').trim());
+      allData = json.slice(1)
+        .filter(row => row.some(c => String(c || '').trim() !== ''))
+        .map(row => {
+          const obj = {};
+          headers.forEach((h, i) => obj[h] = String(row[i] == null ? '' : row[i]).trim());
+          return obj;
+        });
+      uploadBox.classList.add('has-file');
+      uploadInfo.textContent = `✓ ${file.name}（${allData.length} 筆資料）`;
+      searchSection.style.display = 'block';
+      searchInput.value = '';
+      render('');
+      try {
+        localStorage.setItem('shopSearchData', JSON.stringify({
+          data: allData, headers: headers, filename: file.name
+        }));
+      } catch(e) {}
+    } catch (err) {
+      errorMsg.innerHTML = `<div class="error">讀取失敗：${err.message}</div>`;
+    }
+  };
+  reader.readAsArrayBuffer(file);
+});
+
+searchInput.addEventListener('input', (e) => render(e.target.value));
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+function highlight(text, keywords) {
+  let safe = escapeHtml(text);
+  keywords.forEach(kw => {
+    if (!kw) return;
+    const esc = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    safe = safe.replace(new RegExp(esc, 'gi'), m => `<span class="hl">${m}</span>`);
+  });
+  return safe;
+}
+
+function render(query) {
+  const q = query.trim();
+  const keywords = q.split(/\s+/).filter(Boolean);
+  let filtered;
+  if (keywords.length === 0) {
+    filtered = allData;
+  } else {
+    filtered = allData.filter(row => {
+      const allText = headers.map(h => row[h]).join(' ').toLowerCase();
+      return keywords.every(kw => allText.includes(kw.toLowerCase()));
+    });
+  }
+
+  stats.textContent = q
+    ? `找到 ${filtered.length} 筆（共 ${allData.length} 筆）`
+    : `共 ${allData.length} 筆資料`;
+
+  const MAX = 200;
+  const shown = filtered.slice(0, MAX);
+
+  if (shown.length === 0) {
+    results.innerHTML = '<div class="empty">沒有符合的資料</div>';
+    return;
+  }
+
+  // 自動判斷欄位：第一欄當標題，含「電話」的做成可撥號連結，含「地址」的做成地圖連結
+  const nameKey = headers[0];
+  const phoneKeys = headers.filter(h => /電話|手機|phone|tel/i.test(h));
+  const addrKeys = headers.filter(h => /地址|住址|address/i.test(h));
+
+  results.innerHTML = shown.map(row => {
+    const name = highlight(row[nameKey] || '(無名稱)', keywords);
+    const otherRows = headers.filter(h => h !== nameKey).map(h => {
+      const val = row[h] || '';
+      if (!val) return '';
+      let displayVal;
+      if (phoneKeys.includes(h)) {
+        const tel = val.replace(/[^\d+]/g, '');
+        displayVal = `<a href="tel:${tel}">${highlight(val, keywords)}</a>`;
+      } else if (addrKeys.includes(h)) {
+        displayVal = `<a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(val)}" target="_blank" rel="noopener">${highlight(val, keywords)}</a>`;
+      } else {
+        displayVal = highlight(val, keywords);
+      }
+      return `<div class="row"><span class="label">${escapeHtml(h)}</span><span class="value">${displayVal}</span></div>`;
+    }).join('');
+    return `<div class="card"><div class="name">${name}</div>${otherRows}</div>`;
+  }).join('') + (filtered.length > MAX
+    ? `<div class="empty">只顯示前 ${MAX} 筆，請輸入更精確的關鍵字</div>`
+    : '');
+}
+</script>
+</body>
+</html>
