@@ -3,130 +3,190 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>店家查詢系統</title>
+<title>店家地圖</title>
+
+<!-- SheetJS：讀取 Excel / CSV -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<!-- Leaflet 地圖 -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<!-- Leaflet.markercluster：標記叢集（店家多時自動聚合）-->
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
 <style>
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; height: 100%; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
-    margin: 0; padding: 0;
     background: #f4f6f8; color: #222;
+    display: flex; flex-direction: column; min-height: 100vh;
   }
   header {
     background: linear-gradient(135deg, #0066cc, #004c99);
-    color: white; padding: 16px 20px;
-    position: sticky; top: 0; z-index: 100;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    color: white; padding: 14px 18px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+    z-index: 1000;
   }
   header h1 { margin: 0; font-size: 18px; font-weight: 600; }
-  .container { max-width: 900px; margin: 0 auto; padding: 16px; }
-  .upload-box {
-    background: white; border-radius: 12px; padding: 20px;
-    text-align: center; border: 2px dashed #bbb;
-    margin-bottom: 16px; transition: all 0.2s;
+
+  .toolbar { padding: 12px 16px; background: #fff; border-bottom: 1px solid #e6e8eb; }
+  .upload-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .btn {
+    display: inline-block; background: #0066cc; color: #fff;
+    padding: 9px 16px; border-radius: 8px; cursor: pointer;
+    font-size: 14px; font-weight: 500; border: none;
   }
-  .upload-box.has-file { border-style: solid; border-color: #0066cc; text-align: left; }
-  .upload-box label {
-    display: inline-block; background: #0066cc; color: white;
-    padding: 10px 20px; border-radius: 8px; cursor: pointer;
-    font-size: 15px; font-weight: 500;
+  .btn.secondary { background: #eef2f6; color: #0066cc; }
+  .btn:active { opacity: .85; }
+  input[type=file] { display: none; }
+  .upload-info { font-size: 13px; color: #555; flex: 1; min-width: 160px; }
+  #errorMsg .error {
+    background: #fee; color: #c33; padding: 10px; border-radius: 8px;
+    margin-top: 8px; font-size: 13px;
   }
-  .upload-box input[type=file] { display: none; }
-  .upload-info { margin-top: 10px; font-size: 14px; color: #555; }
-  .search-wrap {
-    background: white; border-radius: 12px; padding: 16px;
-    margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-    position: sticky; top: 60px; z-index: 50;
-  }
+
+  .search-wrap { margin-top: 10px; position: relative; }
   #searchInput {
-    width: 100%; padding: 14px 16px; font-size: 16px;
+    width: 100%; padding: 11px 14px; font-size: 15px;
     border: 2px solid #e0e0e0; border-radius: 10px;
-    outline: none; transition: border-color 0.2s;
+    outline: none; transition: border-color .2s;
   }
   #searchInput:focus { border-color: #0066cc; }
-  .stats { font-size: 13px; color: #666; margin-top: 8px; }
-  .results { display: flex; flex-direction: column; gap: 10px; }
+  .stats { font-size: 12px; color: #666; margin-top: 7px; display: flex; flex-wrap: wrap; gap: 12px; }
+  .stats b { color: #0066cc; }
+  .stats .warn b { color: #c77700; }
+
+  .progress { margin-top: 8px; font-size: 12px; color: #0066cc; display: none; align-items: center; gap: 8px; }
+  .progress.active { display: flex; }
+  .bar { flex: 1; height: 5px; background: #e6e8eb; border-radius: 3px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: #0066cc; transition: width .2s; }
+
+  .main { flex: 1; display: flex; min-height: 0; }
+  #map { flex: 2; min-height: 320px; background: #dde3e8; }
+  .list {
+    flex: 1; max-width: 360px; min-width: 240px;
+    overflow-y: auto; background: #f4f6f8;
+    border-left: 1px solid #e6e8eb; padding: 12px;
+  }
   .card {
-    background: white; border-radius: 10px; padding: 14px 16px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-    border-left: 4px solid #0066cc;
+    background: #fff; border-radius: 10px; padding: 12px 14px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 10px;
+    border-left: 4px solid #0066cc; cursor: pointer;
   }
-  .card .name {
-    font-size: 16px; font-weight: 600; color: #111;
-    margin-bottom: 6px; word-break: break-word;
-  }
-  .card .row {
-    font-size: 14px; color: #444; margin: 3px 0;
-    display: flex; gap: 6px; align-items: flex-start;
-  }
-  .card .label {
-    color: #888; flex-shrink: 0; min-width: 42px;
-  }
+  .card.nolocate { border-left-color: #c77700; opacity: .85; cursor: default; }
+  .card .name { font-size: 15px; font-weight: 600; color: #111; margin-bottom: 5px; word-break: break-word; }
+  .card .row { font-size: 13px; color: #444; margin: 2px 0; display: flex; gap: 6px; align-items: flex-start; }
+  .card .label { color: #999; flex-shrink: 0; min-width: 40px; }
   .card .value { word-break: break-word; flex: 1; }
   .card a { color: #0066cc; text-decoration: none; }
-  .card a:active { text-decoration: underline; }
+  .badge { font-size: 11px; color: #c77700; background: #fff4e0; padding: 1px 6px; border-radius: 4px; margin-left: 6px; }
   .hl { background: #fff3a0; padding: 0 2px; border-radius: 2px; font-weight: 600; }
-  .empty {
-    text-align: center; padding: 40px 20px; color: #888; font-size: 14px;
-  }
-  .error {
-    background: #fee; color: #c33; padding: 12px; border-radius: 8px;
-    margin-top: 10px; font-size: 14px;
-  }
-  @media (max-width: 480px) {
-    .container { padding: 12px; }
-    header h1 { font-size: 16px; }
+  .empty { text-align: center; padding: 36px 16px; color: #888; font-size: 14px; }
+
+  .popup .pname { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+  .popup .prow { font-size: 13px; margin: 2px 0; }
+  .popup a { color: #0066cc; }
+
+  @media (max-width: 720px) {
+    .main { flex-direction: column; }
+    #map { flex: none; height: 48vh; }
+    .list { max-width: none; border-left: none; border-top: 1px solid #e6e8eb; }
   }
 </style>
 </head>
 <body>
-<header><h1>🔍 店家查詢系統</h1></header>
-<div class="container">
-  <div class="upload-box" id="uploadBox">
-    <label for="fileInput">📂 選擇客戶名單 Excel 檔</label>
+<header><h1>🗺️ 店家地圖</h1></header>
+
+<div class="toolbar">
+  <div class="upload-row">
+    <label class="btn" for="fileInput">📂 匯入客戶名單</label>
     <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
-    <div class="upload-info" id="uploadInfo">支援 .xlsx / .xls / .csv 格式</div>
-    <div id="errorMsg"></div>
+    <button class="btn secondary" id="clearBtn" style="display:none">清除資料</button>
+    <span class="upload-info" id="uploadInfo">支援 .xlsx / .xls / .csv（需有「地址」欄；若有「經度/緯度」欄則優先使用）</span>
   </div>
+  <div id="errorMsg"></div>
 
   <div id="searchSection" style="display:none">
     <div class="search-wrap">
-      <input type="text" id="searchInput" placeholder="輸入店名、地址、電話等關鍵字…" autocomplete="off">
-      <div class="stats" id="stats"></div>
+      <input type="text" id="searchInput" placeholder="輸入店名、地址、電話、負責人關鍵字…" autocomplete="off">
     </div>
-    <div class="results" id="results"></div>
+    <div class="stats" id="stats"></div>
+    <div class="progress" id="progress">
+      <span id="progressText">定位中…</span>
+      <span class="bar"><i id="progressBar"></i></span>
+    </div>
   </div>
 </div>
 
-<script>
-let allData = [];
-let headers = [];
+<div class="main">
+  <div id="map"></div>
+  <div class="list" id="list"><div class="empty">尚未匯入資料</div></div>
+</div>
 
-const fileInput = document.getElementById('fileInput');
-const uploadBox = document.getElementById('uploadBox');
-const uploadInfo = document.getElementById('uploadInfo');
-const errorMsg = document.getElementById('errorMsg');
+<script>
+/* ============================================================
+   店家地圖：匯入客戶名單 → 地址轉座標 → 在地圖上標記
+   - 免費、免金鑰：OpenStreetMap 圖磚 + Nominatim 地理編碼
+   - 若名單含「經度/緯度」欄位則直接使用（最準確）
+   - 地理編碼結果與名單皆存 localStorage，重開可續用
+   ============================================================ */
+
+const TW_CENTER = [23.7, 120.96];   // 台灣中心，初始視角
+const GEO_DELAY = 1100;             // Nominatim 速率限制：每秒最多 1 次
+const GEO_CACHE_KEY = 'geoCacheV1';
+const DATA_KEY = 'shopMapData';
+
+let allRows = [];      // [{ data:{欄位:值}, lat, lng, located:bool, marker }]
+let headers = [];
+let cols = {};         // { name, phone, addr, lat, lng }
+let geoCache = {};
+let geocodeRunId = 0;  // 中止舊的地理編碼流程
+
+// ---- DOM ----
+const fileInput   = document.getElementById('fileInput');
+const clearBtn    = document.getElementById('clearBtn');
+const uploadInfo  = document.getElementById('uploadInfo');
+const errorMsg    = document.getElementById('errorMsg');
 const searchSection = document.getElementById('searchSection');
 const searchInput = document.getElementById('searchInput');
-const results = document.getElementById('results');
-const stats = document.getElementById('stats');
+const statsEl     = document.getElementById('stats');
+const listEl      = document.getElementById('list');
+const progressEl  = document.getElementById('progress');
+const progressText= document.getElementById('progressText');
+const progressBar = document.getElementById('progressBar');
 
-// 儲存上次使用的資料
+// ---- 地圖 ----
+const map = L.map('map', { center: TW_CENTER, zoom: 8 });
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+}).addTo(map);
+const clusterGroup = L.markerClusterGroup({ maxClusterRadius: 50 });
+map.addLayer(clusterGroup);
+
+// ---- 載入快取 ----
+try { geoCache = JSON.parse(localStorage.getItem(GEO_CACHE_KEY)) || {}; } catch(e) { geoCache = {}; }
+
+// ---- 還原上次名單 ----
 try {
-  const saved = localStorage.getItem('shopSearchData');
-  if (saved) {
-    const obj = JSON.parse(saved);
-    allData = obj.data || [];
-    headers = obj.headers || [];
-    if (allData.length > 0) {
-      uploadBox.classList.add('has-file');
-      uploadInfo.textContent = `✓ 已載入上次資料：${obj.filename || '檔案'}（${allData.length} 筆）`;
-      searchSection.style.display = 'block';
-      render('');
-    }
+  const saved = JSON.parse(localStorage.getItem(DATA_KEY));
+  if (saved && saved.rows && saved.rows.length) {
+    headers = saved.headers || [];
+    cols = saved.cols || {};
+    allRows = saved.rows.map(r => ({ ...r, marker: null }));
+    uploadInfo.textContent = `✓ 已載入上次名單：${saved.filename || '檔案'}（${allRows.length} 筆）`;
+    afterLoad(false);
+    runGeocoding();   // 補齊尚未定位者
   }
 } catch(e) {}
 
+// ============================================================
+//  匯入檔案
+// ============================================================
 fileInput.addEventListener('change', (e) => {
   const file = e.target.files[0];
   if (!file) return;
@@ -134,29 +194,37 @@ fileInput.addEventListener('change', (e) => {
   const reader = new FileReader();
   reader.onload = (ev) => {
     try {
-      const data = new Uint8Array(ev.target.result);
-      const wb = XLSX.read(data, { type: 'array' });
+      const wb = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const json = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-      if (json.length < 2) throw new Error('檔案沒有資料');
+      if (json.length < 2) throw new Error('檔案沒有資料列');
+
       headers = json[0].map(h => String(h || '').trim());
-      allData = json.slice(1)
+      detectColumns();
+      if (!cols.addr && cols.lat == null) {
+        throw new Error('找不到「地址」欄位（也沒有經度/緯度欄）。請確認名單第一列含欄位名稱。');
+      }
+
+      const dataRows = json.slice(1)
         .filter(row => row.some(c => String(c || '').trim() !== ''))
         .map(row => {
-          const obj = {};
-          headers.forEach((h, i) => obj[h] = String(row[i] == null ? '' : row[i]).trim());
-          return obj;
+          const data = {};
+          headers.forEach((h, i) => data[h] = String(row[i] == null ? '' : row[i]).trim());
+          const rec = { data, lat: null, lng: null, located: false, marker: null };
+          // 若名單自帶經緯度，直接採用
+          if (cols.lat != null && cols.lng != null) {
+            const la = parseFloat(data[headers[cols.lat]]);
+            const ln = parseFloat(data[headers[cols.lng]]);
+            if (isFinite(la) && isFinite(ln)) { rec.lat = la; rec.lng = ln; rec.located = true; }
+          }
+          return rec;
         });
-      uploadBox.classList.add('has-file');
-      uploadInfo.textContent = `✓ ${file.name}（${allData.length} 筆資料）`;
-      searchSection.style.display = 'block';
+
+      allRows = dataRows;
+      uploadInfo.textContent = `✓ ${file.name}（${allRows.length} 筆）`;
       searchInput.value = '';
-      render('');
-      try {
-        localStorage.setItem('shopSearchData', JSON.stringify({
-          data: allData, headers: headers, filename: file.name
-        }));
-      } catch(e) {}
+      afterLoad(true);
+      runGeocoding();
     } catch (err) {
       errorMsg.innerHTML = `<div class="error">讀取失敗：${err.message}</div>`;
     }
@@ -164,74 +232,217 @@ fileInput.addEventListener('change', (e) => {
   reader.readAsArrayBuffer(file);
 });
 
-searchInput.addEventListener('input', (e) => render(e.target.value));
+clearBtn.addEventListener('click', () => {
+  if (!confirm('確定要清除目前名單嗎？（地址座標快取會保留）')) return;
+  geocodeRunId++;
+  allRows = []; headers = []; cols = {};
+  localStorage.removeItem(DATA_KEY);
+  clusterGroup.clearLayers();
+  searchSection.style.display = 'none';
+  clearBtn.style.display = 'none';
+  uploadInfo.textContent = '支援 .xlsx / .xls / .csv（需有「地址」欄；若有「經度/緯度」欄則優先使用）';
+  listEl.innerHTML = '<div class="empty">尚未匯入資料</div>';
+  map.setView(TW_CENTER, 8);
+});
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({
-    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-  }[c]));
+searchInput.addEventListener('input', () => render());
+
+// ============================================================
+//  欄位偵測
+// ============================================================
+function detectColumns() {
+  cols = { name: 0, phone: null, addr: null, lat: null, lng: null };
+  headers.forEach((h, i) => {
+    if (/緯度|lat(itude)?/i.test(h) && cols.lat == null) cols.lat = i;
+    else if (/經度|lng|lon(g|gitude)?/i.test(h) && cols.lng == null) cols.lng = i;
+    else if (/地址|住址|address|地点|地點/i.test(h) && cols.addr == null) cols.addr = i;
+    else if (/電話|手機|phone|tel|mobile/i.test(h) && cols.phone == null) cols.phone = i;
+    else if (/(顧客名|店名|名稱|名字|公司|客戶|name)/i.test(h)) cols.name = i;
+  });
 }
 
-function highlight(text, keywords) {
-  let safe = escapeHtml(text);
-  keywords.forEach(kw => {
+// ============================================================
+//  地理編碼（地址 → 座標），含快取與速率限制
+// ============================================================
+async function runGeocoding() {
+  const runId = ++geocodeRunId;
+  const pending = allRows.filter(r => !r.located && getAddr(r));
+
+  // 先用快取補齊
+  pending.forEach(r => {
+    const a = getAddr(r);
+    if (geoCache[a] && geoCache[a].lat != null) {
+      r.lat = geoCache[a].lat; r.lng = geoCache[a].lng; r.located = true;
+    }
+  });
+  render();
+
+  const todo = allRows.filter(r => !r.located && getAddr(r) && !(getAddr(r) in geoCache));
+  if (todo.length === 0) { progressEl.classList.remove('active'); return; }
+
+  progressEl.classList.add('active');
+  let done = 0;
+  for (const r of todo) {
+    if (runId !== geocodeRunId) return;           // 已被新流程取代或清除
+    const addr = getAddr(r);
+    progressText.textContent = `定位中… ${done + 1}/${todo.length}`;
+    const hit = await geocode(addr);
+    geoCache[addr] = hit || { lat: null, lng: null };
+    if (hit) { r.lat = hit.lat; r.lng = hit.lng; r.located = true; }
+    done++;
+    progressBar.style.width = Math.round(done / todo.length * 100) + '%';
+    saveCache();
+    render();
+    if (done < todo.length) await sleep(GEO_DELAY);
+  }
+  progressText.textContent = '定位完成';
+  setTimeout(() => { if (runId === geocodeRunId) progressEl.classList.remove('active'); }, 1500);
+  persistData();
+}
+
+async function geocode(address) {
+  // 逐步簡化地址重試：完整地址 → 去掉巷弄號的路段層級
+  const tries = [address];
+  const simplified = address.replace(/\d.*$/, '').trim();
+  if (simplified && simplified !== address) tries.push(simplified);
+
+  for (const q of tries) {
+    try {
+      const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=tw&q='
+                + encodeURIComponent(q);
+      const res = await fetch(url, { headers: { 'Accept-Language': 'zh-TW' } });
+      if (!res.ok) continue;
+      const arr = await res.json();
+      if (arr && arr.length) return { lat: parseFloat(arr[0].lat), lng: parseFloat(arr[0].lon) };
+    } catch (e) { /* 網路錯誤則嘗試下一個 */ }
+  }
+  return null;
+}
+
+function getAddr(r) { return cols.addr != null ? (r.data[headers[cols.addr]] || '') : ''; }
+function getName(r) { return r.data[headers[cols.name]] || '(無名稱)'; }
+const sleep = ms => new Promise(res => setTimeout(res, ms));
+
+// ============================================================
+//  匯入後的初始化
+// ============================================================
+function afterLoad(persist) {
+  searchSection.style.display = 'block';
+  clearBtn.style.display = 'inline-block';
+  render();
+  if (persist) persistData();
+}
+
+// ============================================================
+//  渲染：依搜尋關鍵字篩選，更新地圖標記與清單
+// ============================================================
+function render() {
+  const q = searchInput.value.trim();
+  const keywords = q.split(/\s+/).filter(Boolean);
+
+  const filtered = keywords.length === 0 ? allRows : allRows.filter(r => {
+    const text = headers.map(h => r.data[h]).join(' ').toLowerCase();
+    return keywords.every(kw => text.includes(kw.toLowerCase()));
+  });
+
+  // ----- 地圖標記 -----
+  clusterGroup.clearLayers();
+  const bounds = [];
+  filtered.forEach(r => {
+    if (!r.located) { r.marker = null; return; }
+    if (!r.marker) {
+      r.marker = L.marker([r.lat, r.lng]);
+      r.marker.bindPopup(popupHtml(r));
+    }
+    clusterGroup.addLayer(r.marker);
+    bounds.push([r.lat, r.lng]);
+  });
+  if (bounds.length) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 16 });
+
+  // ----- 統計 -----
+  const locatedCount = filtered.filter(r => r.located).length;
+  const failCount = filtered.filter(r => !r.located && getAddr(r) && (getAddr(r) in geoCache)).length;
+  statsEl.innerHTML =
+    `<span>顯示 <b>${filtered.length}</b> / ${allRows.length} 筆</span>` +
+    `<span>已定位 <b>${locatedCount}</b></span>` +
+    (failCount ? `<span class="warn">無法定位 <b>${failCount}</b></span>` : '');
+
+  // ----- 清單 -----
+  if (filtered.length === 0) {
+    listEl.innerHTML = '<div class="empty">沒有符合的資料</div>';
+    return;
+  }
+  listEl.innerHTML = filtered.map((r, i) => cardHtml(r, keywords, i)).join('');
+  // 綁定點擊：清單卡片 → 地圖定位並開啟 popup
+  [...listEl.querySelectorAll('.card')].forEach(el => {
+    const idx = +el.dataset.idx;
+    const r = filtered[idx];
+    if (!r.located) return;
+    el.addEventListener('click', () => {
+      map.setView([r.lat, r.lng], 17);
+      if (r.marker) clusterGroup.zoomToShowLayer(r.marker, () => r.marker.openPopup());
+    });
+  });
+}
+
+function cardHtml(r, keywords, idx) {
+  const cls = r.located ? 'card' : 'card nolocate';
+  const badge = r.located ? '' : '<span class="badge">未能定位</span>';
+  const rows = headers
+    .filter(h => h !== headers[cols.name] && h !== headers[cols.lat] && h !== headers[cols.lng])
+    .map(h => {
+      const val = r.data[h]; if (!val) return '';
+      let disp;
+      if (cols.phone != null && h === headers[cols.phone]) {
+        disp = `<a href="tel:${val.replace(/[^\d+]/g,'')}" onclick="event.stopPropagation()">${hl(val, keywords)}</a>`;
+      } else if (cols.addr != null && h === headers[cols.addr]) {
+        disp = `<a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(val)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${hl(val, keywords)}</a>`;
+      } else {
+        disp = hl(val, keywords);
+      }
+      return `<div class="row"><span class="label">${esc(h)}</span><span class="value">${disp}</span></div>`;
+    }).join('');
+  return `<div class="${cls}" data-idx="${idx}"><div class="name">${hl(getName(r), keywords)}${badge}</div>${rows}</div>`;
+}
+
+function popupHtml(r) {
+  const name = esc(getName(r));
+  const rows = headers
+    .filter(h => h !== headers[cols.name] && h !== headers[cols.lat] && h !== headers[cols.lng])
+    .map(h => {
+      const val = r.data[h]; if (!val) return '';
+      let disp;
+      if (cols.phone != null && h === headers[cols.phone]) disp = `<a href="tel:${val.replace(/[^\d+]/g,'')}">${esc(val)}</a>`;
+      else if (cols.addr != null && h === headers[cols.addr]) disp = `<a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(val)}" target="_blank" rel="noopener">${esc(val)}</a>`;
+      else disp = esc(val);
+      return `<div class="prow"><b>${esc(h)}：</b>${disp}</div>`;
+    }).join('');
+  return `<div class="popup"><div class="pname">${name}</div>${rows}</div>`;
+}
+
+// ============================================================
+//  工具
+// ============================================================
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+function hl(text, keywords) {
+  let safe = esc(text);
+  (keywords || []).forEach(kw => {
     if (!kw) return;
-    const esc = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    safe = safe.replace(new RegExp(esc, 'gi'), m => `<span class="hl">${m}</span>`);
+    const e = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    safe = safe.replace(new RegExp(e, 'gi'), m => `<span class="hl">${m}</span>`);
   });
   return safe;
 }
-
-function render(query) {
-  const q = query.trim();
-  const keywords = q.split(/\s+/).filter(Boolean);
-  let filtered;
-  if (keywords.length === 0) {
-    filtered = allData;
-  } else {
-    filtered = allData.filter(row => {
-      const allText = headers.map(h => row[h]).join(' ').toLowerCase();
-      return keywords.every(kw => allText.includes(kw.toLowerCase()));
-    });
-  }
-
-  stats.textContent = q
-    ? `找到 ${filtered.length} 筆（共 ${allData.length} 筆）`
-    : `共 ${allData.length} 筆資料`;
-
-  const MAX = 200;
-  const shown = filtered.slice(0, MAX);
-
-  if (shown.length === 0) {
-    results.innerHTML = '<div class="empty">沒有符合的資料</div>';
-    return;
-  }
-
-  // 自動判斷欄位：第一欄當標題，含「電話」的做成可撥號連結，含「地址」的做成地圖連結
-  const nameKey = headers[0];
-  const phoneKeys = headers.filter(h => /電話|手機|phone|tel/i.test(h));
-  const addrKeys = headers.filter(h => /地址|住址|address/i.test(h));
-
-  results.innerHTML = shown.map(row => {
-    const name = highlight(row[nameKey] || '(無名稱)', keywords);
-    const otherRows = headers.filter(h => h !== nameKey).map(h => {
-      const val = row[h] || '';
-      if (!val) return '';
-      let displayVal;
-      if (phoneKeys.includes(h)) {
-        const tel = val.replace(/[^\d+]/g, '');
-        displayVal = `<a href="tel:${tel}">${highlight(val, keywords)}</a>`;
-      } else if (addrKeys.includes(h)) {
-        displayVal = `<a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(val)}" target="_blank" rel="noopener">${highlight(val, keywords)}</a>`;
-      } else {
-        displayVal = highlight(val, keywords);
-      }
-      return `<div class="row"><span class="label">${escapeHtml(h)}</span><span class="value">${displayVal}</span></div>`;
-    }).join('');
-    return `<div class="card"><div class="name">${name}</div>${otherRows}</div>`;
-  }).join('') + (filtered.length > MAX
-    ? `<div class="empty">只顯示前 ${MAX} 筆，請輸入更精確的關鍵字</div>`
-    : '');
+function saveCache() { try { localStorage.setItem(GEO_CACHE_KEY, JSON.stringify(geoCache)); } catch(e) {} }
+function persistData() {
+  try {
+    const rows = allRows.map(({ marker, ...rest }) => rest);
+    localStorage.setItem(DATA_KEY, JSON.stringify({
+      headers, cols, rows, filename: uploadInfo.textContent.replace(/^✓\s*/, '')
+    }));
+  } catch(e) {}
 }
 </script>
 </body>
