@@ -321,11 +321,38 @@ async function runGeocoding() {
   setTimeout(() => { if (runId === geocodeRunId) progressEl.classList.remove('active'); }, 5000);
 }
 
+// 地址正規化：全形→半形、去括號/樓層/雜訊備註、取到「號」為止
+// （只用於定位查詢；畫面仍顯示原始地址）
+function normalizeAddress(raw) {
+  if (!raw) return '';
+  let s = String(raw).normalize('NFKC');                 // 全形數字/英文/括號 → 半形
+  s = s.replace(/[（〔【「『［｛]/g, '(').replace(/[）〕】」』］｝]/g, ')');
+  const parens = [...s.matchAll(/\(([^)]*)\)/g)].map(m => m[1]);
+  let base = s.replace(/\([^)]*\)/g, '').replace(/\(.*$/, '');   // 去括號備註
+  base = base.replace(/#\S*/g, '').replace(/\s+/g, '');          // 去 #訂單號、空白
+  if (!base.includes('號')) {                            // 主體無「號」但括號內有 → 救回
+    const cand = parens.find(c => c.includes('號'));
+    if (cand) {
+      let c = cand.replace(/\s+/g, '');
+      const pm = base.match(/^(.*?[縣市].*?[區鄉鎮市])/);
+      if (pm && !/[縣市].*[區鄉鎮市]/.test(c) && !c.startsWith(pm[1])) c = pm[1] + c;
+      base = c;
+    }
+  }
+  let core = base.includes('號') ? base.slice(0, base.indexOf('號') + 1) : base;
+  if (!core.includes('號') && /\d+(?:[-之]\d+)?$/.test(base)) core = base + '號';  // 缺號補號
+  core = core.replace(/^[，,、;；\-－\s]+|[，,、;；\-－\s]+$/g, '');
+  return core || String(raw).normalize('NFKC').trim();
+}
+
 async function geocode(address) {
-  // 逐步簡化地址重試：完整地址 → 去掉巷弄號的路段層級
-  const tries = [address];
-  const simplified = address.replace(/\d.*$/, '').trim();
-  if (simplified && simplified !== address) tries.push(simplified);
+  // 先正規化地址，再逐步簡化重試：淨化地址 → 原字串 → 路段層級
+  const norm = normalizeAddress(address);
+  const tries = [];
+  if (norm) tries.push(norm);
+  if (address && address !== norm) tries.push(address);
+  const simplified = (norm || address).replace(/\d.*$/, '').trim();
+  if (simplified && !tries.includes(simplified)) tries.push(simplified);
 
   for (const q of tries) {
     try {
