@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>店家地圖</title>
 
-<!-- SheetJS：讀取 Excel / CSV -->
+<!-- SheetJS：讀取 / 匯出 Excel、CSV -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
 <!-- Leaflet 地圖 -->
@@ -41,7 +41,9 @@
     font-size: 14px; font-weight: 500; border: none;
   }
   .btn.secondary { background: #eef2f6; color: #0066cc; }
+  .btn.success { background: #1a9e57; }
   .btn:active { opacity: .85; }
+  .btn:disabled { opacity: .5; cursor: default; }
   input[type=file] { display: none; }
   .upload-info { font-size: 13px; color: #555; flex: 1; min-width: 160px; }
   #errorMsg .error {
@@ -105,8 +107,9 @@
   <div class="upload-row">
     <label class="btn" for="fileInput">📂 匯入客戶名單</label>
     <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
+    <button class="btn success" id="exportBtn" style="display:none" title="把目前已定位的座標寫進檔案，下次匯入可秒開">💾 匯出含座標檔</button>
     <button class="btn secondary" id="clearBtn" style="display:none">清除資料</button>
-    <span class="upload-info" id="uploadInfo">支援 .xlsx / .xls / .csv（需有「地址」欄；若有「經度/緯度」欄則優先使用）</span>
+    <span class="upload-info" id="uploadInfo">支援 .xlsx / .xls / .csv（需有「地址」欄；若有「經度/緯度」欄則優先使用、免重新定位）</span>
   </div>
   <div id="errorMsg"></div>
 
@@ -131,23 +134,28 @@
 /* ============================================================
    店家地圖：匯入客戶名單 → 地址轉座標 → 在地圖上標記
    - 免費、免金鑰：OpenStreetMap 圖磚 + Nominatim 地理編碼
-   - 若名單含「經度/緯度」欄位則直接使用（最準確）
+   - 若名單含「經度/緯度」欄位則直接使用（最準確、免定位）
+   - 可「匯出含座標檔」：把定位結果寫回 Excel，下次匯入秒開
    - 地理編碼結果與名單皆存 localStorage，重開可續用
    ============================================================ */
 
 const TW_CENTER = [23.7, 120.96];   // 台灣中心，初始視角
 const GEO_DELAY = 1100;             // Nominatim 速率限制：每秒最多 1 次
+const MAX_LIST  = 300;              // 清單最多顯示筆數（地圖仍顯示全部）
 const GEO_CACHE_KEY = 'geoCacheV1';
 const DATA_KEY = 'shopMapData';
 
-let allRows = [];      // [{ data:{欄位:值}, lat, lng, located:bool, marker }]
+let allRows = [];       // [{ data:{欄位:值}, lat, lng, located:bool, marker }]
 let headers = [];
-let cols = {};         // { name, phone, addr, lat, lng }
+let cols = {};          // { name, phone, addr, lat, lng }
 let geoCache = {};
-let geocodeRunId = 0;  // 中止舊的地理編碼流程
+let geocodeRunId = 0;   // 中止舊的地理編碼流程
+let currentFiltered = null;
+let currentFilename = '';
 
 // ---- DOM ----
 const fileInput   = document.getElementById('fileInput');
+const exportBtn   = document.getElementById('exportBtn');
 const clearBtn    = document.getElementById('clearBtn');
 const uploadInfo  = document.getElementById('uploadInfo');
 const errorMsg    = document.getElementById('errorMsg');
@@ -165,7 +173,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 }).addTo(map);
-const clusterGroup = L.markerClusterGroup({ maxClusterRadius: 50 });
+const clusterGroup = L.markerClusterGroup({ maxClusterRadius: 50, chunkedLoading: true });
 map.addLayer(clusterGroup);
 
 // ---- 載入快取 ----
@@ -177,8 +185,9 @@ try {
   if (saved && saved.rows && saved.rows.length) {
     headers = saved.headers || [];
     cols = saved.cols || {};
+    currentFilename = saved.filename || '';
     allRows = saved.rows.map(r => ({ ...r, marker: null }));
-    uploadInfo.textContent = `✓ 已載入上次名單：${saved.filename || '檔案'}（${allRows.length} 筆）`;
+    uploadInfo.textContent = `✓ 已載入上次名單：${currentFilename || '檔案'}（${allRows.length} 筆）`;
     afterLoad(false);
     runGeocoding();   // 補齊尚未定位者
   }
@@ -201,18 +210,17 @@ fileInput.addEventListener('change', (e) => {
 
       headers = json[0].map(h => String(h || '').trim());
       detectColumns();
-      if (!cols.addr && cols.lat == null) {
-        throw new Error('找不到「地址」欄位（也沒有經度/緯度欄）。請確認名單第一列含欄位名稱。');
+      if (cols.addr == null && cols.lat == null) {
+        throw new Error('找不到「地址」欄位（也沒有經度/緯度欄）。請確認名單第一列是欄位名稱。');
       }
 
-      const dataRows = json.slice(1)
+      allRows = json.slice(1)
         .filter(row => row.some(c => String(c || '').trim() !== ''))
         .map(row => {
           const data = {};
           headers.forEach((h, i) => data[h] = String(row[i] == null ? '' : row[i]).trim());
           const rec = { data, lat: null, lng: null, located: false, marker: null };
-          // 若名單自帶經緯度，直接採用
-          if (cols.lat != null && cols.lng != null) {
+          if (cols.lat != null && cols.lng != null) {   // 名單自帶經緯度，直接採用
             const la = parseFloat(data[headers[cols.lat]]);
             const ln = parseFloat(data[headers[cols.lng]]);
             if (isFinite(la) && isFinite(ln)) { rec.lat = la; rec.lng = ln; rec.located = true; }
@@ -220,7 +228,7 @@ fileInput.addEventListener('change', (e) => {
           return rec;
         });
 
-      allRows = dataRows;
+      currentFilename = file.name;
       uploadInfo.textContent = `✓ ${file.name}（${allRows.length} 筆）`;
       searchInput.value = '';
       afterLoad(true);
@@ -232,20 +240,23 @@ fileInput.addEventListener('change', (e) => {
   reader.readAsArrayBuffer(file);
 });
 
+exportBtn.addEventListener('click', exportFile);
+
 clearBtn.addEventListener('click', () => {
   if (!confirm('確定要清除目前名單嗎？（地址座標快取會保留）')) return;
   geocodeRunId++;
-  allRows = []; headers = []; cols = {};
+  allRows = []; headers = []; cols = {}; currentFiltered = null; currentFilename = '';
   localStorage.removeItem(DATA_KEY);
   clusterGroup.clearLayers();
   searchSection.style.display = 'none';
+  exportBtn.style.display = 'none';
   clearBtn.style.display = 'none';
-  uploadInfo.textContent = '支援 .xlsx / .xls / .csv（需有「地址」欄；若有「經度/緯度」欄則優先使用）';
+  uploadInfo.textContent = '支援 .xlsx / .xls / .csv（需有「地址」欄；若有「經度/緯度」欄則優先使用、免重新定位）';
   listEl.innerHTML = '<div class="empty">尚未匯入資料</div>';
   map.setView(TW_CENTER, 8);
 });
 
-searchInput.addEventListener('input', () => render());
+searchInput.addEventListener('input', () => render({ fit: true }));
 
 // ============================================================
 //  欄位偵測
@@ -262,42 +273,52 @@ function detectColumns() {
 }
 
 // ============================================================
-//  地理編碼（地址 → 座標），含快取與速率限制
+//  地理編碼（地址 → 座標），含快取、速率限制與節流重繪
 // ============================================================
 async function runGeocoding() {
   const runId = ++geocodeRunId;
-  const pending = allRows.filter(r => !r.located && getAddr(r));
 
-  // 先用快取補齊
-  pending.forEach(r => {
+  // 先用快取補齊已知座標
+  allRows.forEach(r => {
+    if (r.located) return;
     const a = getAddr(r);
-    if (geoCache[a] && geoCache[a].lat != null) {
+    if (a && geoCache[a] && geoCache[a].lat != null) {
       r.lat = geoCache[a].lat; r.lng = geoCache[a].lng; r.located = true;
     }
   });
-  render();
+  render({ fit: true });
 
   const todo = allRows.filter(r => !r.located && getAddr(r) && !(getAddr(r) in geoCache));
   if (todo.length === 0) { progressEl.classList.remove('active'); return; }
 
   progressEl.classList.add('active');
-  let done = 0;
+  let done = 0, lastList = Date.now(), didFit = false;
   for (const r of todo) {
-    if (runId !== geocodeRunId) return;           // 已被新流程取代或清除
+    if (runId !== geocodeRunId) return;             // 已被新流程取代或清除
     const addr = getAddr(r);
-    progressText.textContent = `定位中… ${done + 1}/${todo.length}`;
+    progressText.textContent = `定位中… ${done + 1}/${todo.length}（每秒約 1 筆）`;
     const hit = await geocode(addr);
     geoCache[addr] = hit || { lat: null, lng: null };
-    if (hit) { r.lat = hit.lat; r.lng = hit.lng; r.located = true; }
+    if (hit) {
+      r.lat = hit.lat; r.lng = hit.lng; r.located = true;
+      if (!searchInput.value.trim()) {              // 無搜尋時：增量加入標記（省效能）
+        if (!r.marker) { r.marker = L.marker([r.lat, r.lng]); r.marker.bindPopup(popupHtml(r)); }
+        clusterGroup.addLayer(r.marker);
+        if (!didFit) { map.setView([r.lat, r.lng], 11); didFit = true; }
+      }
+    }
     done++;
     progressBar.style.width = Math.round(done / todo.length * 100) + '%';
-    saveCache();
-    render();
+    updateStats(currentFiltered || allRows);
+    if (done % 20 === 0) saveCache();
+    if (Date.now() - lastList > 4000) { render(); lastList = Date.now(); }   // 清單最多每 4 秒重繪一次
     if (done < todo.length) await sleep(GEO_DELAY);
   }
-  progressText.textContent = '定位完成';
-  setTimeout(() => { if (runId === geocodeRunId) progressEl.classList.remove('active'); }, 1500);
+  saveCache();
   persistData();
+  render({ fit: true });
+  progressText.textContent = '✓ 定位完成，記得按「💾 匯出含座標檔」保存';
+  setTimeout(() => { if (runId === geocodeRunId) progressEl.classList.remove('active'); }, 5000);
 }
 
 async function geocode(address) {
@@ -328,15 +349,44 @@ const sleep = ms => new Promise(res => setTimeout(res, ms));
 // ============================================================
 function afterLoad(persist) {
   searchSection.style.display = 'block';
+  exportBtn.style.display = 'inline-block';
   clearBtn.style.display = 'inline-block';
-  render();
+  render({ fit: true });
   if (persist) persistData();
 }
 
 // ============================================================
-//  渲染：依搜尋關鍵字篩選，更新地圖標記與清單
+//  匯出：把已定位的座標寫回檔案（新增「經度/緯度」欄）
 // ============================================================
-function render() {
+function exportFile() {
+  if (!allRows.length) return;
+  const extra = [];
+  if (cols.lat == null) extra.push('緯度');
+  if (cols.lng == null) extra.push('經度');
+  const outHeaders = [...headers, ...extra];
+  const aoa = [outHeaders];
+  allRows.forEach(r => {
+    const row = headers.map((h, i) => {
+      if (i === cols.lat && r.located) return r.lat;   // 覆寫既有經緯度欄為解析後座標
+      if (i === cols.lng && r.located) return r.lng;
+      return r.data[h];
+    });
+    if (cols.lat == null) row.push(r.located ? r.lat : '');
+    if (cols.lng == null) row.push(r.located ? r.lng : '');
+    aoa.push(row);
+  });
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '店家');
+  const base = (currentFilename || '店家名單').replace(/\.(xlsx|xls|csv)$/i, '');
+  XLSX.writeFile(wb, base + '_含座標.xlsx');
+}
+
+// ============================================================
+//  渲染
+// ============================================================
+function render(opts) {
+  opts = opts || {};
   const q = searchInput.value.trim();
   const keywords = q.split(/\s+/).filter(Boolean);
 
@@ -344,40 +394,42 @@ function render() {
     const text = headers.map(h => r.data[h]).join(' ').toLowerCase();
     return keywords.every(kw => text.includes(kw.toLowerCase()));
   });
+  currentFiltered = filtered;
 
-  // ----- 地圖標記 -----
+  // ----- 地圖標記（整批重建）-----
   clusterGroup.clearLayers();
-  const bounds = [];
+  const markers = [], bounds = [];
   filtered.forEach(r => {
-    if (!r.located) { r.marker = null; return; }
-    if (!r.marker) {
-      r.marker = L.marker([r.lat, r.lng]);
-      r.marker.bindPopup(popupHtml(r));
-    }
-    clusterGroup.addLayer(r.marker);
+    if (!r.located) return;
+    if (!r.marker) { r.marker = L.marker([r.lat, r.lng]); r.marker.bindPopup(popupHtml(r)); }
+    markers.push(r.marker);
     bounds.push([r.lat, r.lng]);
   });
-  if (bounds.length) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 16 });
+  if (markers.length) clusterGroup.addLayers(markers);
+  if (opts.fit && bounds.length) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 16 });
 
-  // ----- 統計 -----
-  const locatedCount = filtered.filter(r => r.located).length;
-  const failCount = filtered.filter(r => !r.located && getAddr(r) && (getAddr(r) in geoCache)).length;
+  updateStats(filtered);
+  renderList(filtered, keywords);
+}
+
+function updateStats(filtered) {
+  const located = filtered.filter(r => r.located).length;
+  const fail = filtered.filter(r => !r.located && getAddr(r) && (getAddr(r) in geoCache)).length;
   statsEl.innerHTML =
     `<span>顯示 <b>${filtered.length}</b> / ${allRows.length} 筆</span>` +
-    `<span>已定位 <b>${locatedCount}</b></span>` +
-    (failCount ? `<span class="warn">無法定位 <b>${failCount}</b></span>` : '');
+    `<span>已定位 <b>${located}</b></span>` +
+    (fail ? `<span class="warn">無法定位 <b>${fail}</b></span>` : '');
+}
 
-  // ----- 清單 -----
-  if (filtered.length === 0) {
-    listEl.innerHTML = '<div class="empty">沒有符合的資料</div>';
-    return;
-  }
-  listEl.innerHTML = filtered.map((r, i) => cardHtml(r, keywords, i)).join('');
-  // 綁定點擊：清單卡片 → 地圖定位並開啟 popup
+function renderList(filtered, keywords) {
+  if (filtered.length === 0) { listEl.innerHTML = '<div class="empty">沒有符合的資料</div>'; return; }
+  const shown = filtered.slice(0, MAX_LIST);
+  listEl.innerHTML = shown.map((r, i) => cardHtml(r, keywords, i)).join('') +
+    (filtered.length > MAX_LIST
+      ? `<div class="empty">清單只顯示前 ${MAX_LIST} 筆（地圖顯示全部）；用搜尋縮小範圍</div>` : '');
   [...listEl.querySelectorAll('.card')].forEach(el => {
-    const idx = +el.dataset.idx;
-    const r = filtered[idx];
-    if (!r.located) return;
+    const r = shown[+el.dataset.idx];
+    if (!r || !r.located) return;
     el.addEventListener('click', () => {
       map.setView([r.lat, r.lng], 17);
       if (r.marker) clusterGroup.zoomToShowLayer(r.marker, () => r.marker.openPopup());
@@ -406,7 +458,6 @@ function cardHtml(r, keywords, idx) {
 }
 
 function popupHtml(r) {
-  const name = esc(getName(r));
   const rows = headers
     .filter(h => h !== headers[cols.name] && h !== headers[cols.lat] && h !== headers[cols.lng])
     .map(h => {
@@ -417,7 +468,7 @@ function popupHtml(r) {
       else disp = esc(val);
       return `<div class="prow"><b>${esc(h)}：</b>${disp}</div>`;
     }).join('');
-  return `<div class="popup"><div class="pname">${name}</div>${rows}</div>`;
+  return `<div class="popup"><div class="pname">${esc(getName(r))}</div>${rows}</div>`;
 }
 
 // ============================================================
@@ -439,9 +490,7 @@ function saveCache() { try { localStorage.setItem(GEO_CACHE_KEY, JSON.stringify(
 function persistData() {
   try {
     const rows = allRows.map(({ marker, ...rest }) => rest);
-    localStorage.setItem(DATA_KEY, JSON.stringify({
-      headers, cols, rows, filename: uploadInfo.textContent.replace(/^✓\s*/, '')
-    }));
+    localStorage.setItem(DATA_KEY, JSON.stringify({ headers, cols, rows, filename: currentFilename }));
   } catch(e) {}
 }
 </script>
